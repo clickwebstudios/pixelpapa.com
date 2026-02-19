@@ -1,0 +1,42 @@
+.pixelpapa-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.pixelpapa-status.pending {
+    background: #f0f0f1;
+    color: #3c434a;
+}
+
+.pixelpapa-status.processing {
+    background: #fcf9e8;
+    color: #94660c;
+}
+
+.pixelpapa-status.done {
+    background: #edfaef;
+    color: #0a6311;
+}
+
+.pixelpapa-status.error {
+    background: #fcf0f1;
+    color: #8a2424;
+}
+
+.pixelpapa-meta-box .button {
+    margin-bottom: 5px;
+}
+
+.pixelpapa-meta-box ul {
+    margin: 10px 0;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.pixelpapa-meta-box li {
+    margin-bottom: 5px;
+    font-size: 12px;
+}
