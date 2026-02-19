@@ -23,6 +23,11 @@ class Plugin {
      * Initialize plugin
      */
     public function init() {
+        // Ensure cron is scheduled (in case it was missed during activation)
+        if (!wp_next_scheduled('pixelpapa_process_queue')) {
+            wp_schedule_event(time(), 'five_minutes', 'pixelpapa_process_queue');
+        }
+        
         // Load text domain
         add_action('init', [$this, 'load_textdomain']);
         
@@ -34,11 +39,8 @@ class Plugin {
             $this->init_admin();
         }
         
-        // Register cron job
+        // Register cron job handler
         add_action('pixelpapa_process_queue', [$this, 'process_queue']);
-        if (!wp_next_scheduled('pixelpapa_process_queue')) {
-            wp_schedule_event(time(), 'five_minutes', 'pixelpapa_process_queue');
-        }
         
         // Add custom cron schedule
         add_filter('cron_schedules', [$this, 'add_cron_schedules']);
@@ -76,6 +78,10 @@ class Plugin {
         // Initialize image editor
         $editor = new \PixelPapa\Admin\ImageEditor();
         $editor->init();
+        
+        // Initialize status page
+        $status = new \PixelPapa\Admin\StatusPage();
+        $status->init();
     }
     
     /**
