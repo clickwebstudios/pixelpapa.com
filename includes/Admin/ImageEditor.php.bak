@@ -1,0 +1,923 @@
+<?php
+namespace PixelPapa\Admin;
+
+use PixelPapa\Queue\QueueManager;
+use PixelPapa\API\ClaidClient;
+
+class ImageEditor {
+    
+    public function init() {
+        add_action('admin_menu', [$this, 'add_editor_page']);
+        add_action('admin_init', [$this, 'handle_process_request']);
+        add_action('admin_init', [$this, 'handle_video_request']);
+    }
+    
+    public function add_editor_page() {
+        // Add as top-level menu (more reliable)
+        add_menu_page(
+            __('PixelPapa Editor', 'pixelpapa'),
+            __('PixelPapa', 'pixelpapa'),
+            'manage_options',
+            'pixelpapa-editor',
+            [$this, 'render_editor_page'],
+            'dashicons-format-image',
+            30
+        );
+    }
+    
+    public function render_editor_page() {
+        // Check user capabilities - more permissive
+        if (!current_user_can('manage_options') && !current_user_can('edit_posts')) {
+            wp_die(__('You do not have permission to access this page.', 'pixelpapa'));
+        }
+        
+        $attachment_id = intval($_GET['attachment_id'] ?? 0);
+        $type = sanitize_text_field($_GET['type'] ?? 'enhance');
+        $show_comparison = isset($_GET['comparison']) && $_GET['comparison'] === '1';
+        
+        if (!$attachment_id || !wp_attachment_is_image($attachment_id)) {
+            wp_die(__('Invalid image.', 'pixelpapa'));
+        }
+        
+        $attachment = get_post($attachment_id);
+        $image_url = wp_get_attachment_url($attachment_id);
+        $image_meta = wp_get_attachment_metadata($attachment_id);
+        
+        // Find completed jobs with results
+        $queue = QueueManager::instance();
+        $jobs = $queue->get_attachment_jobs($attachment_id);
+        
+        $completed_jobs = array_filter($jobs, fn($j) => $j['status'] === 'completed');
+        $latest_completed = !empty($completed_jobs) ? reset($completed_jobs) : null;
+        $result_url = $latest_completed ? wp_get_attachment_url($latest_completed['result_attachment_id']) : null;
+        
+        $costs = ['enhance' => 1, 'upscale' => 2, 'background' => 3, 'video' => 35];
+        
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title><?php _e('PixelPapa Editor', 'pixelpapa'); ?></title>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+            <style>
+                * { margin: 0; padding: 0; box-sizing: border-box; }
+                body { 
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    background: #0a0a0f; 
+                    color: #fff; 
+                    min-height: 100vh;
+                }
+                
+                /* Header */
+                .header {
+                    background: #15151f;
+                    padding: 1rem 2rem;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    border-bottom: 1px solid #2a2a35;
+                }
+                
+                .logo { 
+                    display: flex; 
+                    align-items: center; 
+                    gap: 0.75rem;
+                    font-size: 1.25rem;
+                    font-weight: 600;
+                    color: #6366f1;
+                }
+                
+                .nav-tabs {
+                    display: flex;
+                    gap: 0.5rem;
+                    background: #1e1e2d;
+                    padding: 0.25rem;
+                    border-radius: 0.75rem;
+                }
+                
+                .nav-tab {
+                    padding: 0.625rem 1.25rem;
+                    border-radius: 0.5rem;
+                    text-decoration: none;
+                    color: #9ca3af;
+                    font-size: 0.875rem;
+                    font-weight: 500;
+                    transition: all 0.2s;
+                }
+                
+                .nav-tab:hover { color: #fff; }
+                .nav-tab.active { 
+                    background: #6366f1; 
+                    color: white;
+                }
+                
+                .credits-badge {
+                    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+                    padding: 0.5rem 1rem;
+                    border-radius: 2rem;
+                    font-size: 0.875rem;
+                    font-weight: 600;
+                }
+                
+                /* Main Layout */
+                .container {
+                    display: flex;
+                    height: calc(100vh - 65px);
+                }
+                
+                .main {
+                    flex: 1;
+                    padding: 1.5rem;
+                    overflow-y: auto;
+                    display: flex;
+                    flex-direction: column;
+                }
+                
+                /* Section Title */
+                .section-title {
+                    font-size: 0.75rem;
+                    text-transform: uppercase;
+                    letter-spacing: 0.1em;
+                    color: #6b7280;
+                    margin-bottom: 1rem;
+                    display: flex;
+                    align-items: center;
+                    gap: 0.5rem;
+                }
+                
+                /* Image Preview Area */
+                .preview-wrapper {
+                    background: #15151f;
+                    border-radius: 1rem;
+                    border: 1px solid #2a2a35;
+                    overflow: hidden;
+                    margin-bottom: 1.5rem;
+                    position: relative;
+                }
+                
+                .preview-header {
+                    padding: 1rem 1.5rem;
+                    border-bottom: 1px solid #2a2a35;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }
+                
+                .preview-title {
+                    font-size: 0.875rem;
+                    font-weight: 600;
+                }
+                
+                .animate-btn {
+                    background: linear-gradient(135deg, #ec4899, #8b5cf6);
+                    border: none;
+                    color: white;
+                    padding: 0.5rem 1rem;
+                    border-radius: 0.5rem;
+                    font-size: 0.875rem;
+                    font-weight: 500;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    gap: 0.5rem;
+                    transition: all 0.2s;
+                }
+                
+                .animate-btn:hover {
+                    transform: translateY(-1px);
+                    box-shadow: 0 4px 12px rgba(236, 72, 153, 0.4);
+                }
+                
+                /* Comparison Slider */
+                .comparison-container {
+                    position: relative;
+                    width: 100%;
+                    height: 400px;
+                    overflow: hidden;
+                }
+                
+                .comparison-container img {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    object-fit: contain;
+                    background: #0a0a0f;
+                }
+                
+                .comparison-before {
+                    z-index: 1;
+                    width: 50%;
+                    overflow: hidden;
+                    border-right: 2px solid #6366f1;
+                }
+                
+                .comparison-after {
+                    z-index: 0;
+                }
+                
+                .comparison-slider {
+                    position: absolute;
+                    top: 0;
+                    left: 50%;
+                    width: 40px;
+                    height: 100%;
+                    transform: translateX(-50%);
+                    z-index: 2;
+                    cursor: ew-resize;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+                
+                .slider-handle {
+                    width: 40px;
+                    height: 40px;
+                    background: #6366f1;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.5);
+                    border: 3px solid white;
+                }
+                
+                .slider-handle i {
+                    color: white;
+                    font-size: 0.75rem;
+                }
+                
+                .comparison-labels {
+                    position: absolute;
+                    bottom: 1rem;
+                    left: 0;
+                    right: 0;
+                    display: flex;
+                    justify-content: space-between;
+                    padding: 0 1.5rem;
+                    z-index: 3;
+                    pointer-events: none;
+                }
+                
+                .comparison-label {
+                    background: rgba(0, 0, 0, 0.7);
+                    padding: 0.5rem 1rem;
+                    border-radius: 0.5rem;
+                    font-size: 0.75rem;
+                    font-weight: 500;
+                }
+                
+                /* Single Image Preview */
+                .single-preview {
+                    padding: 2rem;
+                    text-align: center;
+                }
+                
+                .single-preview img {
+                    max-width: 100%;
+                    max-height: 350px;
+                    border-radius: 0.5rem;
+                }
+                
+                /* Image Info */
+                .image-info {
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 1rem;
+                    padding: 1rem 1.5rem;
+                    background: #1e1e2d;
+                }
+                
+                .info-item { text-align: center; }
+                .info-label { font-size: 0.75rem; color: #6b7280; margin-bottom: 0.25rem; }
+                .info-value { font-size: 0.875rem; font-weight: 500; }
+                
+                /* History Section */
+                .history-section { margin-top: 1.5rem; }
+                
+                .history-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                    gap: 1rem;
+                }
+                
+                .history-item {
+                    background: #15151f;
+                    border-radius: 0.75rem;
+                    overflow: hidden;
+                    border: 1px solid #2a2a35;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                }
+                
+                .history-item:hover {
+                    border-color: #6366f1;
+                    transform: translateY(-2px);
+                }
+                
+                .history-item img {
+                    width: 100%;
+                    height: 100px;
+                    object-fit: cover;
+                }
+                
+                .history-item-info {
+                    padding: 0.75rem;
+                    font-size: 0.75rem;
+                }
+                
+                .history-item-type {
+                    font-weight: 600;
+                    text-transform: capitalize;
+                }
+                
+                .history-item-date {
+                    color: #6b7280;
+                    margin-top: 0.25rem;
+                }
+                
+                /* Sidebar */
+                .sidebar {
+                    width: 360px;
+                    background: #15151f;
+                    border-left: 1px solid #2a2a35;
+                    padding: 1.5rem;
+                    overflow-y: auto;
+                }
+                
+                .panel {
+                    background: #1e1e2d;
+                    border-radius: 0.75rem;
+                    padding: 1.25rem;
+                    margin-bottom: 1rem;
+                }
+                
+                .panel-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 1rem;
+                }
+                
+                .panel-title {
+                    font-size: 0.875rem;
+                    font-weight: 600;
+                    display: flex;
+                    align-items: center;
+                    gap: 0.5rem;
+                }
+                
+                .panel-badge {
+                    background: rgba(99, 102, 241, 0.2);
+                    color: #6366f1;
+                    padding: 0.25rem 0.5rem;
+                    border-radius: 0.25rem;
+                    font-size: 0.75rem;
+                }
+                
+                .option-group { margin-bottom: 1.25rem; }
+                
+                .option-label {
+                    font-size: 0.75rem;
+                    color: #9ca3af;
+                    margin-bottom: 0.5rem;
+                    display: block;
+                }
+                
+                .option-buttons {
+                    display: flex;
+                    gap: 0.5rem;
+                    flex-wrap: wrap;
+                }
+                
+                .option-btn {
+                    padding: 0.5rem 1rem;
+                    border: 1px solid #2a2a35;
+                    background: transparent;
+                    color: #9ca3af;
+                    border-radius: 0.5rem;
+                    cursor: pointer;
+                    font-size: 0.875rem;
+                    transition: all 0.2s;
+                }
+                
+                .option-btn:hover { border-color: #6366f1; color: #6366f1; }
+                .option-btn.active { background: #6366f1; border-color: #6366f1; color: white; }
+                
+                .slider-container { margin-top: 1rem; }
+                
+                .slider-header {
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 0.5rem;
+                    font-size: 0.75rem;
+                }
+                
+                .slider {
+                    width: 100%;
+                    height: 4px;
+                    background: #2a2a35;
+                    border-radius: 2px;
+                    -webkit-appearance: none;
+                }
+                
+                .slider::-webkit-slider-thumb {
+                    -webkit-appearance: none;
+                    width: 16px;
+                    height: 16px;
+                    background: #6366f1;
+                    border-radius: 50%;
+                    cursor: pointer;
+                }
+                
+                /* Process Button */
+                .process-btn {
+                    width: 100%;
+                    padding: 1rem;
+                    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+                    border: none;
+                    border-radius: 0.75rem;
+                    color: white;
+                    font-size: 1rem;
+                    font-weight: 600;
+                    cursor: pointer;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 0.5rem;
+                    transition: all 0.2s;
+                }
+                
+                .process-btn:hover {
+                    transform: translateY(-2px);
+                    box-shadow: 0 10px 20px rgba(99, 102, 241, 0.3);
+                }
+                
+                .credit-tag {
+                    background: rgba(255, 255, 255, 0.2);
+                    padding: 0.25rem 0.75rem;
+                    border-radius: 1rem;
+                    font-size: 0.75rem;
+                }
+                
+                /* Status Messages */
+                .status-msg {
+                    padding: 1rem;
+                    border-radius: 0.5rem;
+                    margin-bottom: 1rem;
+                    font-size: 0.875rem;
+                }
+                
+                .status-msg.success { background: rgba(34, 197, 94, 0.1); border: 1px solid #22c55e; color: #22c55e; }
+                .status-msg.error { background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #ef4444; }
+                .status-msg.pending { background: rgba(234, 179, 8, 0.1); border: 1px solid #eab308; color: #eab308; }
+                
+                /* Video Modal */
+                .modal-overlay {
+                    display: none;
+                    position: fixed;
+                    inset: 0;
+                    background: rgba(0, 0, 0, 0.8);
+                    z-index: 1000;
+                    align-items: center;
+                    justify-content: center;
+                }
+                
+                .modal-overlay.active { display: flex; }
+                
+                .modal {
+                    background: #15151f;
+                    border-radius: 1rem;
+                    padding: 2rem;
+                    max-width: 500px;
+                    width: 90%;
+                    border: 1px solid #2a2a35;
+                }
+                
+                .modal-title {
+                    font-size: 1.25rem;
+                    font-weight: 600;
+                    margin-bottom: 1rem;
+                }
+                
+                .modal-close {
+                    position: absolute;
+                    top: 1rem;
+                    right: 1rem;
+                    background: none;
+                    border: none;
+                    color: #6b7280;
+                    font-size: 1.5rem;
+                    cursor: pointer;
+                }
+                
+                @media (max-width: 1024px) {
+                    .container { flex-direction: column; }
+                    .sidebar { width: 100%; border-left: none; border-top: 1px solid #2a2a35; }
+                }
+            </style>
+        </head>
+        <body>
+            <header class="header">
+                <a href="<?php echo admin_url('upload.php'); ?>" class="logo">
+                    <i class="fas fa-arrow-left"></i>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                    PixelPapa
+                </a>
+                
+                <nav class="nav-tabs">
+                    <a href="<?php echo admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=enhance'); ?>" 
+                       class="nav-tab <?php echo $type === 'enhance' ? 'active' : ''; ?>">Enhancer</a>
+                    <a href="<?php echo admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=upscale'); ?>" 
+                       class="nav-tab <?php echo $type === 'upscale' ? 'active' : ''; ?>">Upscale</a>
+                    <a href="<?php echo admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=video'); ?>" 
+                       class="nav-tab <?php echo $type === 'video' ? 'active' : ''; ?>">Video</a>
+                </nav>
+                
+                <div class="credits-badge"><i class="fas fa-bolt"></i> <?php echo $costs[$type] ?? 1; ?> credits</div>
+            </header>
+            
+            <div class="container">
+                <main class="main">
+                    <?php if (isset($_GET['success'])): ?>
+                        <div class="status-msg success"><i class="fas fa-check-circle"></i> Processing started! Check back in a few minutes.</div>
+                    <?php endif; ?>
+                    
+                    <?php if (isset($_GET['error'])): ?>
+                        <div class="status-msg error"><i class="fas fa-exclamation-circle"></i> <?php echo esc_html($_GET['error']); ?></div>
+                    <?php endif; ?>
+                    
+                    <!-- Main Preview with Comparison -->
+                    <div class="section-title">
+                        <?php if ($result_url): ?>
+                            Before & After Comparison
+                            <a href="<?php echo admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=' . $type); ?>" 
+                               style="margin-left: auto; color: #6366f1; font-size: 0.75rem;">Hide comparison →</a>
+                        <?php else: ?>
+                            Image Preview
+                        <?php endif; ?>
+                    </div>
+                    
+                    <div class="preview-wrapper">
+                        <div class="preview-header">
+                            <span class="preview-title">
+                                <?php if ($type === 'upscale'): ?>
+                                    <i class="fas fa-expand"></i> Upscale Preview
+                                <?php elseif ($type === 'video'): ?>
+                                    <i class="fas fa-video"></i> Video Preview
+                                <?php else: ?>
+                                    <i class="fas fa-magic"></i> Enhancement Preview
+                                <?php endif; ?>
+                            </span>
+                            
+                            <?php if ($type !== 'video'): ?>
+                                <button class="animate-btn" onclick="openVideoModal()">
+                                    <i class="fas fa-play"></i> Animate
+                                </button>
+                            <?php endif; ?>
+                        </div>
+                        
+                        <?php if ($result_url && $show_comparison): ?>
+                            <!-- Before/After Comparison Slider -->
+                            <div class="comparison-container" id="comparisonContainer">
+                                <img src="<?php echo esc_url($result_url); ?>" class="comparison-after" alt="After">
+                                <div class="comparison-before" id="beforeContainer">
+                                    <img src="<?php echo esc_url($image_url); ?>" alt="Before">
+                                </div>
+                                
+                                <div class="comparison-slider" id="slider">
+                                    <div class="slider-handle">
+                                        <i class="fas fa-arrows-alt-h"></i>
+                                    </div>
+                                </div>
+                                
+                                <div class="comparison-labels">
+                                    <span class="comparison-label">Before</span>
+                                    <span class="comparison-label">After</span>
+                                </div>
+                            </div>
+                            
+                        <?php else: ?>
+                            <!-- Single Image Preview -->
+                            <div class="single-preview">
+                                <img src="<?php echo esc_url($image_url); ?>" alt="Preview">
+                                
+                                <?php if ($result_url): ?>
+                                    <a href="<?php echo admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=' . $type . '&comparison=1'); ?>" 
+                                       style="display: inline-block; margin-top: 1rem; padding: 0.75rem 1.5rem; background: #6366f1; color: white; border-radius: 0.5rem; text-decoration: none;">
+                                        <i class="fas fa-columns"></i> Compare Before/After
+                                    </a>
+                                <?php endif; ?>
+                            </div>
+                            
+                        <?php endif; ?>
+                        
+                        <div class="image-info">
+                            <div class="info-item">
+                                <div class="info-label">Dimensions</div>
+                                <div class="info-value">
+                                    <?php echo ($image_meta['width'] ?? '?') . ' × ' . ($image_meta['height'] ?? '?') . ' px'; ?>
+                                </div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-label">Size</div>
+                                <div class="info-value">
+                                    <?php 
+                                    $file = get_attached_file($attachment_id);
+                                    echo $file && file_exists($file) ? size_format(filesize($file)) : 'Unknown';
+                                    ?>
+                                </div>
+                            </div>
+                            
+                            <div class="info-item">
+                                <div class="info-label">Format</div>
+                                <div class="info-value"><?php echo strtoupper(pathinfo($image_url, PATHINFO_EXTENSION)); ?></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <?php if (!empty($completed_jobs)): ?>
+                        <div class="history-section">
+                            <div class="section-title"><i class="fas fa-history"></i> Processing History</div>
+                            
+                            <div class="history-grid">
+                                <?php foreach (array_slice($completed_jobs, 0, 6) as $job): ?>
+                                    <?php $result_img = wp_get_attachment_url($job['result_attachment_id']); ?
+                                    <div class="history-item" onclick="window.location.href='<?php echo admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=' . $job['job_type']); ?>'">
+                                        <img src="<?php echo esc_url($result_img); ?>" alt="">
+                                        <div class="history-item-info">
+                                            <div class="history-item-type"><?php echo ucfirst($job['job_type']); ?></div>
+                                            <div class="history-item-date"><?php echo human_time_diff(strtotime($job['created_at']), current_time('timestamp')); ?> ago</div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?
+                            </div>
+                        </div>
+                    <?php endif; ?
+                </main>
+                
+                <aside class="sidebar">
+                    <form method="post">
+                        <?php wp_nonce_field('pixelpapa_process', 'pixelpapa_nonce'); ?>
+                        <input type="hidden" name="attachment_id" value="<?php echo $attachment_id; ?>">
+                        <input type="hidden" name="job_type" value="<?php echo esc_attr($type); ?>">
+                        
+                        <div class="panel">
+                            <div class="panel-header">
+                                <div class="panel-title"><i class="fas fa-sliders-h"></i> Operations</div>
+                                <span class="panel-badge"><?php echo ucfirst($type); ?></span>
+                            </div>
+                            
+                            <?php if ($type === 'upscale'): ?>
+                                <div class="option-group">
+                                    <label class="option-label">AI Model</label>
+                                    <div class="option-buttons">
+                                        <button type="button" class="option-btn active">Prime ✨</button>
+                                        <button type="button" class="option-btn">Gentle</button>
+                                        <button type="button" class="option-btn">Old Photo</button>
+                                    </div>
+                                </div>
+                                
+                                <div class="option-group">
+                                    <label class="option-label">Scale Factor</label>
+                                    <div class="option-buttons">
+                                        <button type="button" class="option-btn">2×</button>
+                                        <button type="button" class="option-btn active">4×</button>
+                                        <button type="button" class="option-btn">8×</button>
+                                    </div>
+                                </div>
+                                
+                            <?php elseif ($type === 'video'): ?>
+                                <div class="option-group">
+                                    <label class="option-label">Duration</label>
+                                    <div class="option-buttons">
+                                        <button type="button" class="option-btn active" onclick="document.getElementById('duration').value=5">5 sec (35 cr)</button>
+                                        <button type="button" class="option-btn" onclick="document.getElementById('duration').value=10">10 sec (70 cr)</button>
+                                    </div>
+                                    <input type="hidden" name="duration" id="duration" value="5">
+                                </div>
+                                
+                            <?php else: ?>
+                                <div class="option-group">
+                                    <label class="option-label">Enhancement Level</label>
+                                    
+                                    <div class="slider-container">
+                                        <div class="slider-header">
+                                            <span>HDR</span>
+                                            <span id="hdr-val">60%</span>
+                                        </div>
+                                        <input type="range" class="slider" name="hdr" min="0" max="100" value="60" 
+                                               oninput="document.getElementById('hdr-val').textContent=this.value+'%'">
+                                    </div>
+                                    
+                                    <div class="slider-container">
+                                        <div class="slider-header">
+                                            <span>Sharpness</span>
+                                            <span id="sharp-val">40%</span>
+                                        </div>
+                                        <input type="range" class="slider" name="sharpness" min="0" max="100" value="40"
+                                               oninput="document.getElementById('sharp-val').textContent=this.value+'%'">
+                                    </div>
+                                </div>
+                                
+                                <div class="option-group">
+                                    <label class="option-label">Options</label>
+                                    <div style="display:flex;flex-direction:column;gap:0.75rem;">
+                                        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">
+                                            <span>🎨 Color Correction</span>
+                                            <input type="checkbox" name="color_correction" checked style="width:44px;height:24px;">
+                                        </label>
+                                        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">
+                                            <span>🔍 Deblur</span>
+                                            <input type="checkbox" name="deblur" checked style="width:44px;height:24px;">
+                                        </label>
+                                        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">
+                                            <span>✨ Polish</span>
+                                            <input type="checkbox" name="polish" style="width:44px;height:24px;">
+                                        </label>
+                                    </div>
+                                </div>
+                            <?php endif; ?
+                        </div>
+                        
+                        <button type="submit" name="pixelpapa_process" class="process-btn">
+                            <?php if ($type === 'upscale'): ?>
+                                <i class="fas fa-expand"></i> Upscale Image
+                            <?php elseif ($type === 'video'): ?>
+                                <i class="fas fa-video"></i> Generate Video
+                            <?php else: ?>
+                                <i class="fas fa-magic"></i> Enhance Image
+                            <?php endif; ?>
+                            <span class="credit-tag"><?php echo $costs[$type]; ?> cr</span>
+                        </button>
+                    </form>
+                </aside>
+            </div>
+            
+            <!-- Video Generation Modal -->
+            <div class="modal-overlay" id="videoModal">
+                <div class="modal">
+                    <h3 class="modal-title">🎬 Generate Video from Image</h3>
+                    
+                    <p style="color:#9ca3af;margin-bottom:1.5rem;">
+                        Transform this image into an AI-generated video animation.
+                    </p>
+                    
+                    <form method="post" action="<?php echo admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id); ?>">
+                        <?php wp_nonce_field('pixelpapa_video', 'pixelpapa_video_nonce'); ?>
+                        <input type="hidden" name="attachment_id" value="<?php echo $attachment_id; ?>">
+                        <input type="hidden" name="video_action" value="1">
+                        
+                        <div class="option-group">
+                            <label class="option-label">Duration</label>
+                            <div class="option-buttons">
+                                <button type="button" class="option-btn active" onclick="document.getElementById('video_duration').value=5;this.classList.add('active');this.nextElementSibling.classList.remove('active');">5 seconds (35 credits)</button>
+                                <button type="button" class="option-btn" onclick="document.getElementById('video_duration').value=10;this.classList.add('active');this.previousElementSibling.classList.remove('active');">10 seconds (70 credits)</button>
+                            </div>
+                            <input type="hidden" name="duration" id="video_duration" value="5">
+                        </div>
+                        
+                        <div style="display:flex;gap:1rem;margin-top:1.5rem;">
+                            <button type="button" onclick="closeVideoModal()" style="flex:1;padding:0.75rem;background:#2a2a35;border:none;border-radius:0.5rem;color:#fff;cursor:pointer;">Cancel</button>
+                            
+                            <button type="submit" style="flex:1;padding:0.75rem;background:linear-gradient(135deg,#ec4899,#8b5cf6);border:none;border-radius:0.5rem;color:#fff;cursor:pointer;font-weight:600;">
+                                <i class="fas fa-play"></i> Generate Video
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <script>
+                // Comparison Slider
+                const container = document.getElementById('comparisonContainer');
+                const before = document.getElementById('beforeContainer');
+                const slider = document.getElementById('slider');
+                
+                if (container && slider) {
+                    let isDragging = false;
+                    
+                    slider.addEventListener('mousedown', () => isDragging = true);
+                    document.addEventListener('mouseup', () => isDragging = false);
+                    document.addEventListener('mousemove', (e) => {
+                        if (!isDragging) return;
+                        
+                        const rect = container.getBoundingClientRect();
+                        let x = e.clientX - rect.left;
+                        x = Math.max(0, Math.min(x, rect.width));
+                        
+                        const percent = (x / rect.width) * 100;
+                        before.style.width = percent + '%';
+                        slider.style.left = percent + '%';
+                    });
+                    
+                    // Touch support
+                    slider.addEventListener('touchstart', () => isDragging = true);
+                    document.addEventListener('touchend', () => isDragging = false);
+                    document.addEventListener('touchmove', (e) => {
+                        if (!isDragging) return;
+                        
+                        const rect = container.getBoundingClientRect();
+                        let x = e.touches[0].clientX - rect.left;
+                        x = Math.max(0, Math.min(x, rect.width));
+                        
+                        const percent = (x / rect.width) * 100;
+                        before.style.width = percent + '%';
+                        slider.style.left = percent + '%';
+                    });
+                }
+                
+                // Video Modal
+                function openVideoModal() {
+                    document.getElementById('videoModal').classList.add('active');
+                }
+                
+                function closeVideoModal() {
+                    document.getElementById('videoModal').classList.remove('active');
+                }
+                
+                // Close modal on backdrop click
+                document.getElementById('videoModal').addEventListener('click', (e) => {
+                    if (e.target.id === 'videoModal') closeVideoModal();
+                });
+            </script>
+        </body>
+        </html>
+        <?php
+    }
+    
+    public function handle_process_request() {
+        if (!isset($_POST['pixelpapa_process']) || !isset($_POST['pixelpapa_nonce'])) return;
+        
+        if (!wp_verify_nonce($_POST['pixelpapa_nonce'], 'pixelpapa_process')) {
+            wp_die(__('Security check failed.', 'pixelpapa'));
+        }
+        
+        $this->process_job($_POST['attachment_id'] ?? 0, $_POST['job_type'] ?? 'enhance', $_POST);
+    }
+    
+    public function handle_video_request() {
+        if (!isset($_POST['video_action']) || !isset($_POST['pixelpapa_video_nonce'])) return;
+        
+        if (!wp_verify_nonce($_POST['pixelpapa_video_nonce'], 'pixelpapa_video')) {
+            wp_die(__('Security check failed.', 'pixelpapa'));
+        }
+        
+        $this->process_job($_POST['attachment_id'] ?? 0, 'video', $_POST);
+    }
+    
+    private function process_job($attachment_id, $job_type, $post_data) {
+        $attachment_id = intval($attachment_id);
+        
+        if (!$attachment_id || !wp_attachment_is_image($attachment_id)) {
+            wp_die(__('Invalid image.', 'pixelpapa'));
+        }
+        
+        $operations = [];
+        
+        if ($job_type === 'enhance') {
+            $operations = [
+                'hdr' => intval($post_data['hdr'] ?? 60),
+                'sharpness' => intval($post_data['sharpness'] ?? 40),
+                'color_correction' => isset($post_data['color_correction']),
+                'deblur' => isset($post_data['deblur']),
+                'polish' => isset($post_data['polish']),
+            ];
+        } elseif ($job_type === 'upscale') {
+            $operations = ['upscale' => 'smart_enhance'];
+        } elseif ($job_type === 'video') {
+            $operations = ['duration' => intval($post_data['duration'] ?? 5)];
+        }
+        
+        $queue = QueueManager::instance();
+        
+        // Check for existing pending job
+        $jobs = $queue->get_attachment_jobs($attachment_id);
+        foreach ($jobs as $job) {
+            if ($job['job_type'] === $job_type && in_array($job['status'], ['pending', 'processing'])) {
+                wp_redirect(admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=' . $job_type . '&error=already_processing'));
+                exit;
+            }
+        }
+        
+        $result = $queue->add_job(
+            $attachment_id,
+            $job_type,
+            $operations,
+            $job_type === 'video' ? 'video/generate' : 'image/edit/async'
+        );
+        
+        if (is_wp_error($result)) {
+            wp_redirect(admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=' . $job_type . '&error=' . urlencode($result->get_error_message())));
+            exit;
+        }
+        
+        wp_redirect(admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=' . $job_type . '&success=1'));
+        exit;
+    }
+}

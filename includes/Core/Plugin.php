@@ -72,6 +72,10 @@ class Plugin {
         
         $media = new MediaLibrary();
         $media->init();
+        
+        // Initialize image editor
+        $editor = new \PixelPapa\Admin\ImageEditor();
+        $editor->init();
     }
     
     /**

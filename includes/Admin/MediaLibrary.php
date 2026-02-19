@@ -14,6 +14,9 @@ class MediaLibrary {
         add_filter('media_row_actions', [$this, 'add_row_actions'], 10, 2);
         add_action('add_meta_boxes', [$this, 'add_attachment_meta_box']);
         
+        // Handle single image action click
+        add_action('admin_action_pixelpapa_single', [$this, 'handle_single_action']);
+        
         // Auto-enhance on upload
         add_action('add_attachment', [$this, 'maybe_auto_enhance']);
         
@@ -22,6 +25,18 @@ class MediaLibrary {
         
         // Enqueue media library scripts
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
+    }
+    
+    /**
+     * Handle single image action (redirect to new editor)
+     */
+    public function handle_single_action() {
+        $attachment_id = intval($_GET['attachment_id'] ?? 0);
+        $type = sanitize_text_field($_GET['type'] ?? 'enhance');
+        
+        // Redirect to new editor page
+        wp_redirect(admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $attachment_id . '&type=' . $type));
+        exit;
     }
     
     /**
@@ -118,21 +133,20 @@ class MediaLibrary {
             return $actions;
         }
         
-        $url = wp_nonce_url(
-            admin_url('admin.php?action=pixelpapa_single&attachment_id=' . $post->ID),
-            'pixelpapa_single_' . $post->ID
-        );
+        // Link to editor page instead of direct action
+        $enhance_url = admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $post->ID . '&type=enhance');
+        $video_url = admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $post->ID . '&type=video');
         
         $actions['pixelpapa_enhance'] = sprintf(
             '<a href="%s" class="pixelpapa-enhance" data-id="%d">%s</a>',
-            esc_url(add_query_arg('type', 'enhance', $url)),
+            esc_url($enhance_url),
             $post->ID,
             __('AI Enhance', 'pixelpapa')
         );
         
         $actions['pixelpapa_video'] = sprintf(
             '<a href="%s" class="pixelpapa-video" data-id="%d">%s</a>',
-            esc_url(add_query_arg('type', 'video', $url)),
+            esc_url($video_url),
             $post->ID,
             __('Generate Video', 'pixelpapa')
         );
@@ -192,29 +206,28 @@ class MediaLibrary {
             echo '</ul>';
         }
         
-        // Action buttons
+        // Action buttons - link to editor
         echo '<h4>' . __('Actions', 'pixelpapa') . '</h4>';
         
-        $url = wp_nonce_url(
-            admin_url('admin.php?action=pixelpapa_single&attachment_id=' . $post->ID),
-            'pixelpapa_single_' . $post->ID
-        );
+        $enhance_url = admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $post->ID . '&type=enhance');
+        $video_url = admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $post->ID . '&type=video');
+        $upscale_url = admin_url('admin.php?page=pixelpapa-editor&attachment_id=' . $post->ID . '&type=upscale');
         
         printf(
             '<a href="%s" class="button">%s</a> ',
-            esc_url(add_query_arg('type', 'enhance', $url)),
+            esc_url($enhance_url),
             __('Enhance Image', 'pixelpapa')
         );
         
         printf(
             '<a href="%s" class="button">%s</a> ',
-            esc_url(add_query_arg('type', 'video', $url)),
+            esc_url($video_url),
             __('Generate Video', 'pixelpapa')
         );
         
         printf(
             '<a href="%s" class="button">%s</a>',
-            esc_url(add_query_arg('type', 'upscale', $url)),
+            esc_url($upscale_url),
             __('Upscale 2x', 'pixelpapa')
         );
     }
@@ -246,6 +259,7 @@ class MediaLibrary {
      * Show admin notices
      */
     public function show_admin_notices() {
+        // Bulk action notice
         if (isset($_GET['pixelpapa_bulk'])) {
             $count = intval($_GET['pixelpapa_count'] ?? 0);
             $type = sanitize_text_field($_GET['pixelpapa_bulk']);
@@ -262,6 +276,35 @@ class MediaLibrary {
                     $count,
                     esc_html($type)
                 )
+            );
+        }
+        
+        // Single action success notice
+        if (isset($_GET['pixelpapa_single']) && $_GET['pixelpapa_single'] === 'success') {
+            $type = sanitize_text_field($_GET['pixelpapa_type'] ?? 'enhance');
+            
+            printf(
+                '<div class="notice notice-success is-dismissible"><p>%s</p></div>',
+                sprintf(
+                    __('AI %s job queued successfully! The image will be processed in the background.', 'pixelpapa'),
+                    esc_html(ucfirst($type))
+                )
+            );
+        }
+        
+        // Single action error notice
+        if (isset($_GET['pixelpapa_error'])) {
+            $error = sanitize_text_field($_GET['pixelpapa_error']);
+            
+            if ($error === 'already_processing') {
+                $message = __('This image is already being processed. Please wait for it to complete.', 'pixelpapa');
+            } else {
+                $message = $error;
+            }
+            
+            printf(
+                '<div class="notice notice-error is-dismissible"><p>%s</p></div>',
+                esc_html($message)
             );
         }
     }
